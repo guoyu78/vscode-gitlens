@@ -1,5 +1,4 @@
 'use strict';
-import * as path from 'path';
 import {
     commands,
     ConfigurationChangeEvent,
@@ -7,28 +6,28 @@ import {
     Event,
     EventEmitter,
     TextEditor,
+    TextEditorSelectionChangeEvent,
     TreeDataProvider,
     TreeItem,
     TreeView,
-    Uri,
     window
 } from 'vscode';
 import { UriComparer } from '../comparers';
-import { configuration, GitExplorerView, IExplorersConfig, IHistoryExplorerConfig } from '../configuration';
+import { configuration, IExplorersConfig, IHistoryExplorerConfig } from '../configuration';
 import { CommandContext, GlyphChars, setCommandContext } from '../constants';
 import { Container } from '../container';
-import { GitUri } from '../git/gitUri';
+import { GitUri } from '../gitService';
 import { Logger } from '../logger';
 import { Functions } from '../system';
 import { RefreshNodeCommandArgs } from '../views/explorerCommands';
-import { GitExplorer } from './gitExplorer';
-import { Explorer, ExplorerNode, HistoryNode, MessageNode, RefreshReason } from './nodes';
+import { ExplorerNode, MessageNode, RefreshReason } from './nodes';
+import { LineHistoryNode } from './nodes/lineHistoryNode';
 
 export * from './nodes';
 
-export class HistoryExplorer extends Disposable implements TreeDataProvider<ExplorerNode> {
+export class LineHistoryExplorer extends Disposable implements TreeDataProvider<ExplorerNode> {
     private _disposable: Disposable | undefined;
-    private _root?: ExplorerNode;
+    private _root?: LineHistoryNode;
     private _tree: TreeView<ExplorerNode> | undefined;
 
     private _onDidChangeTreeData = new EventEmitter<ExplorerNode>();
@@ -40,24 +39,25 @@ export class HistoryExplorer extends Disposable implements TreeDataProvider<Expl
         super(() => this.dispose());
 
         Container.explorerCommands;
-        commands.registerCommand('gitlens.historyExplorer.refresh', this.refresh, this);
-        commands.registerCommand('gitlens.historyExplorer.refreshNode', this.refreshNode, this);
-        commands.registerCommand('gitlens.historyExplorer.close', () => this.dock(false), this);
-        commands.registerCommand('gitlens.historyExplorer.dock', this.dock, this);
+        commands.registerCommand('gitlens.lineHistoryExplorer.refresh', this.refresh, this);
+        commands.registerCommand('gitlens.lineHistoryExplorer.refreshNode', this.refreshNode, this);
+        // commands.registerCommand('gitlens.historyExplorer.close', () => this.dock(false), this);
+        // commands.registerCommand('gitlens.historyExplorer.dock', this.dock, this);
 
-        commands.registerCommand(
-            'gitlens.historyExplorer.setRenameFollowingOn',
-            () => GitExplorer.setRenameFollowing(true),
-            this
-        );
-        commands.registerCommand(
-            'gitlens.historyExplorer.setRenameFollowingOff',
-            () => GitExplorer.setRenameFollowing(false),
-            this
-        );
+        // commands.registerCommand(
+        //     'gitlens.historyExplorer.setRenameFollowingOn',
+        //     () => GitExplorer.setRenameFollowing(true),
+        //     this
+        // );
+        // commands.registerCommand(
+        //     'gitlens.historyExplorer.setRenameFollowingOff',
+        //     () => GitExplorer.setRenameFollowing(false),
+        //     this
+        // );
 
         Container.context.subscriptions.push(
             window.onDidChangeActiveTextEditor(Functions.debounce(this.onActiveEditorChanged, 500), this),
+            window.onDidChangeTextEditorSelection(Functions.debounce(this.onSelectionChanged, 500), this),
             window.onDidChangeVisibleTextEditors(Functions.debounce(this.onVisibleEditorsChanged, 500), this),
             configuration.onDidChange(this.onConfigurationChanged, this)
         );
@@ -86,16 +86,7 @@ export class HistoryExplorer extends Disposable implements TreeDataProvider<Expl
             configuration.changed(e, configuration.name('historyExplorer')('enabled').value) ||
             configuration.changed(e, configuration.name('historyExplorer')('location').value)
         ) {
-            setCommandContext(CommandContext.HistoryExplorer, this.config.enabled ? this.config.location : false);
-        }
-
-        if (initializing || configuration.changed(e, configuration.name('historyExplorer')('enabled').value)) {
-            if (this.config.enabled) {
-                this.undock(!initializing, !configuration.changed(e, configuration.name('mode').value));
-            }
-            else {
-                this.dock(!initializing, !configuration.changed(e, configuration.name('mode').value));
-            }
+            setCommandContext(CommandContext.LineHistoryExplorer, this.config.enabled ? this.config.location : false);
         }
 
         if (initializing) {
@@ -108,7 +99,7 @@ export class HistoryExplorer extends Disposable implements TreeDataProvider<Expl
                 this._onDidChangeTreeData = new EventEmitter<ExplorerNode>();
             }
 
-            this._tree = window.createTreeView(`gitlens.historyExplorer:${this.config.location}`, {
+            this._tree = window.createTreeView(`gitlens.lineHistoryExplorer:${this.config.location}`, {
                 treeDataProvider: this
             });
             this._disposable = this._tree;
@@ -121,6 +112,13 @@ export class HistoryExplorer extends Disposable implements TreeDataProvider<Expl
 
     private async onActiveEditorChanged(editor: TextEditor | undefined) {
         const root = await this.getRootNode(editor);
+        if (!this.setRoot(root)) return;
+
+        this.refresh(RefreshReason.ActiveEditorChanged, root);
+    }
+
+    private async onSelectionChanged(e: TextEditorSelectionChangeEvent) {
+        const root = await this.getRootNode(e.textEditor);
         if (!this.setRoot(root)) return;
 
         this.refresh(RefreshReason.ActiveEditorChanged, root);
@@ -156,19 +154,8 @@ export class HistoryExplorer extends Disposable implements TreeDataProvider<Expl
         return node.getTreeItem();
     }
 
-    async dock(switchView: boolean = true, updateConfig: boolean = true) {
-        if (switchView) {
-            await Container.gitExplorer.switchTo(GitExplorerView.History);
-        }
-
-        await setCommandContext(CommandContext.HistoryExplorer, false);
-        if (updateConfig) {
-            await configuration.updateEffective(configuration.name('historyExplorer')('enabled').value, false);
-        }
-    }
-
     getQualifiedCommand(command: string) {
-        return `gitlens.historyExplorer.${command}`;
+        return `gitlens.lineHistoryExplorer.${command}`;
     }
 
     async refresh(reason?: RefreshReason, root?: ExplorerNode) {
@@ -176,7 +163,7 @@ export class HistoryExplorer extends Disposable implements TreeDataProvider<Expl
             reason = RefreshReason.Command;
         }
 
-        Logger.log(`HistoryExplorer.refresh`, `reason='${reason}'`);
+        Logger.log(`LineHistoryExplorer.refresh`, `reason='${reason}'`);
 
         if (this._root === undefined || root === undefined) {
             this.clearRoot();
@@ -187,7 +174,7 @@ export class HistoryExplorer extends Disposable implements TreeDataProvider<Expl
     }
 
     refreshNode(node: ExplorerNode, args?: RefreshNodeCommandArgs) {
-        Logger.log(`HistoryExplorer.refreshNode(${(node as { id?: string }).id || ''})`);
+        Logger.log(`LineHistoryExplorer.refreshNode(${(node as { id?: string }).id || ''})`);
 
         if (args !== undefined && node.supportsPaging) {
             node.maxCount = args.maxCount;
@@ -209,17 +196,6 @@ export class HistoryExplorer extends Disposable implements TreeDataProvider<Expl
         }
     }
 
-    async undock(switchView: boolean = true, updateConfig: boolean = true) {
-        if (switchView) {
-            await Container.gitExplorer.switchTo(GitExplorerView.Repository);
-        }
-
-        await setCommandContext(CommandContext.HistoryExplorer, this.config.location);
-        if (updateConfig) {
-            await configuration.updateEffective(configuration.name('historyExplorer')('enabled').value, true);
-        }
-    }
-
     private clearRoot() {
         if (this._root === undefined) return;
 
@@ -227,26 +203,7 @@ export class HistoryExplorer extends Disposable implements TreeDataProvider<Expl
         this._root = undefined;
     }
 
-    private async getRootNode(editor: TextEditor | undefined): Promise<ExplorerNode | undefined> {
-        return HistoryExplorer.getHistoryNode(this, editor, this._root);
-    }
-
-    private setRoot(root: ExplorerNode | undefined): boolean {
-        if (this._root === root) return false;
-
-        if (this._root !== undefined) {
-            this._root.dispose();
-        }
-
-        this._root = root;
-        return true;
-    }
-
-    static async getHistoryNode(
-        explorer: Explorer,
-        editor: TextEditor | undefined,
-        root: ExplorerNode | undefined
-    ): Promise<ExplorerNode | undefined> {
+    private async getRootNode(editor: TextEditor | undefined): Promise<LineHistoryNode | undefined> {
         // If we have no active editor, or no visible editors, or no trackable visible editors reset the view
         if (
             editor == null ||
@@ -257,32 +214,32 @@ export class HistoryExplorer extends Disposable implements TreeDataProvider<Expl
         }
 
         // If we do have a visible trackable editor, don't change from the last state (avoids issues when focus switches to the problems/output/debug console panes)
-        if (editor.document === undefined || !Container.git.isTrackable(editor.document.uri)) return root;
+        if (editor.document === undefined || !Container.git.isTrackable(editor.document.uri)) return this._root;
 
-        let gitUri = await GitUri.fromUri(editor.document.uri);
+        const gitUri = await GitUri.fromUri(editor.document.uri);
 
         const repo = await Container.git.getRepository(gitUri);
         if (repo === undefined) return undefined;
 
-        let uri;
-        if (gitUri.sha !== undefined) {
-            // If we have a sha, normalize the history to the working file (so we get a full history all the time)
-            const [fileName, repoPath] = await Container.git.findWorkingFileName(
-                gitUri.fsPath,
-                gitUri.repoPath,
-                gitUri.sha
-            );
-
-            if (fileName !== undefined) {
-                uri = Uri.file(repoPath !== undefined ? path.join(repoPath, fileName) : fileName);
-            }
+        if (
+            this._root !== undefined &&
+            UriComparer.equals(gitUri, this._root.uri) &&
+            editor.selection.isEqual(this._root.range)
+        ) {
+            return this._root;
         }
 
-        if (UriComparer.equals(uri || gitUri, root && root.uri)) return root;
+        return new LineHistoryNode(gitUri, editor.selection, repo, this);
+    }
 
-        if (uri !== undefined) {
-            gitUri = await GitUri.fromUri(uri);
+    private setRoot(root: LineHistoryNode | undefined): boolean {
+        if (this._root === root) return false;
+
+        if (this._root !== undefined) {
+            this._root.dispose();
         }
-        return new HistoryNode(gitUri, repo, explorer);
+
+        this._root = root;
+        return true;
     }
 }

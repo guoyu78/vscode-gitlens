@@ -27,8 +27,9 @@ import { GitUri } from '../gitService';
 import { Logger } from '../logger';
 import { Functions } from '../system';
 import { RefreshNodeCommandArgs } from '../views/explorerCommands';
-import { HistoryExplorer } from './historyExplorer';
+import { FileHistoryExplorer } from './fileHistoryExplorer';
 import { ExplorerNode, MessageNode, RefreshReason, RepositoriesNode, RepositoryNode } from './nodes';
+import { HistoryNode } from './nodes/historyNode';
 
 export * from './nodes';
 
@@ -428,8 +429,8 @@ export class GitExplorer extends Disposable implements TreeDataProvider<Explorer
         }
     }
 
-    private async getHistoryNode(editor: TextEditor | undefined): Promise<ExplorerNode | undefined> {
-        return HistoryExplorer.getHistoryNode(this, editor, this._root);
+    private async getHistoryNode(editor: TextEditor | undefined): Promise<HistoryNode | undefined> {
+        return FileHistoryExplorer.getHistoryNode<HistoryNode>(this, editor, this._root as HistoryNode, HistoryNode);
     }
 
     private async setFilesLayout(layout: ExplorerFilesLayout) {
@@ -452,7 +453,7 @@ export class GitExplorer extends Disposable implements TreeDataProvider<Explorer
     }
 
     private async undockHistory(switchView: boolean = true) {
-        Container.historyExplorer.undock(switchView);
+        Container.fileHistoryExplorer.undock(switchView);
     }
 
     static setRenameFollowing(enabled: boolean) {
